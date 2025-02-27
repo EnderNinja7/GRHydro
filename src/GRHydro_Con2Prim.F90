@@ -37,97 +37,52 @@
    @endhistory 
 
 @@*/
+
 subroutine Conservative2Primitive(CCTK_ARGUMENTS)
+
   use Con2Prim_fortran_interfaces
+
   implicit none
 
   DECLARE_CCTK_ARGUMENTS
   DECLARE_CCTK_PARAMETERS
+  !!DECLARE_CCTK_FUNCTIONS
 
   integer :: i, j, k, itracer, nx, ny, nz
   CCTK_REAL :: uxx, uxy, uxz, uyy, uyz, uzz, pmin, epsmin, dummy1, dummy2
   logical :: epsnegative
   character*256 :: warnline
   
-  ! Declare input/debug variables with explicit types
-  CCTK_REAL :: dens_in, tau_in, scon1_in, scon2_in, scon3_in
-  CCTK_REAL :: rho_in, vel_x_in, vel_y_in, vel_z_in
-  CCTK_REAL :: eps_in, press_in, w_lorentz_in
-  
   CCTK_REAL :: local_min_tracer
   CCTK_REAL :: local_perc_ptol
 
-  ! Save memory when MP is not used
+  ! save memory when MP is not used
   CCTK_INT :: GRHydro_UseGeneralCoordinates
   CCTK_REAL, DIMENSION(cctk_ash1,cctk_ash2,cctk_ash3) :: g11, g12, g13, g22, g23, g33
   pointer (pg11,g11), (pg12,g12), (pg13,g13), (pg22,g22), (pg23,g23), (pg33,g33)
   CCTK_REAL, DIMENSION(cctk_ash1,cctk_ash2,cctk_ash3,3) :: vup
   pointer (pvup,vup)
 
-  ! Declare temporary arrays as allocatable
-  CCTK_REAL, DIMENSION(:,:,:), allocatable :: dens_avg, tau_avg
-  CCTK_REAL, DIMENSION(:,:,:), allocatable :: scon1_avg, scon2_avg, scon3_avg
+  !define de-averaging variables
+  CCTK_REAL, DIMENSION(:,:,:), allocatable :: dens_de_avg, tau_de_avg
+  CCTK_REAL, DIMENSION(:,:,:), allocatable :: scon1_de_avg, scon2_de_avg, scon3_de_avg
+  CCTK_REAL, DIMENSION(:,:,:), allocatable :: temp1_de_avg, temp2_de_avg
 
-  ! EOS Omni vars
+
+! begin EOS Omni vars
   CCTK_INT  :: n,keytemp,anyerr,keyerr
   CCTK_REAL :: xpress,xeps,xtemp,xye
-  n = 1; keytemp = 0; anyerr = 0; keyerr = 0
-  xpress = 0.0d0; xeps = 0.0d0; xtemp = 0.0d0; xye = 0.0d0
+  n = 1;keytemp = 0;anyerr = 0;keyerr = 0
+  xpress = 0.0d0;xeps = 0.0d0;xtemp = 0.0d0;xye = 0.0d0
+! end EOS Omni vars
 
   if(evolve_temper.ne.0) then
      call Conservative2PrimitiveHot(CCTK_PASS_FTOF)
      return
   endif
 
-  ! Open log files
-  open(unit=10, file="c2p_wham_log.txt", action="write", status="replace")
-  open(unit=11, file="c2p_wham_input_log.txt", action="write", status="replace")
 
-  ! Initialize grid dimensions
-  nx = cctk_lsh(1)
-  ny = cctk_lsh(2)
-  nz = cctk_lsh(3)
-
-  ! Allocate temporary arrays with error checking
-  allocate(dens_avg(nx,ny,nz), tau_avg(nx,ny,nz), stat=keyerr)
-  if (keyerr /= 0) then
-    call CCTK_ERROR("Failed to allocate dens_avg and tau_avg arrays")
-  endif
-  
-  allocate(scon1_avg(nx,ny,nz), scon2_avg(nx,ny,nz), scon3_avg(nx,ny,nz), stat=keyerr)
-  if (keyerr /= 0) then
-    call CCTK_ERROR("Failed to allocate scon arrays")
-  endif
-
-  ! Initialize arrays
-  dens_avg = dens
-  tau_avg = tau
-  scon1_avg = scon(:,:,:,1)
-  scon2_avg = scon(:,:,:,2)
-  scon3_avg = scon(:,:,:,3)
-
-  ! Apply de-averaging 
-  call apply(dens, nx, ny, nz, 0, dens)
-  call apply(dens, nx, ny, nz, 1, dens)
-  call apply(dens, nx, ny, nz, 2, dens)
-
-  call apply(tau, nx, ny, nz, 0, tau)
-  call apply(tau, nx, ny, nz, 1, tau)
-  call apply(tau, nx, ny, nz, 2, tau)
-
-  call apply(scon(:,:,:,1), nx, ny, nz, 0, scon(:,:,:,1))
-  call apply(scon(:,:,:,1), nx, ny, nz, 1, scon(:,:,:,1))
-  call apply(scon(:,:,:,1), nx, ny, nz, 2, scon(:,:,:,1))
-
-  call apply(scon(:,:,:,2), nx, ny, nz, 0, scon(:,:,:,2))
-  call apply(scon(:,:,:,2), nx, ny, nz, 1, scon(:,:,:,2))
-  call apply(scon(:,:,:,2), nx, ny, nz, 2, scon(:,:,:,2))
-
-  call apply(scon(:,:,:,3), nx, ny, nz, 0, scon(:,:,:,3))
-  call apply(scon(:,:,:,3), nx, ny, nz, 1, scon(:,:,:,3))
-  call apply(scon(:,:,:,3), nx, ny, nz, 2, scon(:,:,:,3))
-
-  ! Set up pointers for metric components
+  ! save memory when MP is not used
   if (GRHydro_UseGeneralCoordinates(cctkGH).ne.0) then
     pg11 = loc(gaa)
     pg12 = loc(gab)
@@ -149,6 +104,43 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
   nx = cctk_lsh(1)
   ny = cctk_lsh(2)
   nz = cctk_lsh(3)
+
+  !Allocate de-averaging values
+  allocate(dens_de_avg(nx,ny,nz), tau_de_avg(nx,ny,nz), stat=keyerr)
+  if (keyerr /= 0) then
+    call CCTK_ERROR("Failed to allocate dens_de_avg and tau_de_avg arrays")
+  endif
+  
+  allocate(scon1_de_avg(nx,ny,nz), scon2_de_avg(nx,ny,nz), scon3_de_avg(nx,ny,nz), stat=keyerr)
+  if (keyerr /= 0) then
+    call CCTK_ERROR("Failed to allocate scon arrays")
+  endif
+
+  allocate(temp1_de_avg(nx,ny,nz), temp2_de_avg(nx,ny,nz), stat=keyerr)
+  if (keyerr /= 0) then
+    call CCTK_ERROR("Failed to allocate temp arrays")
+  endif
+
+  !De-average conserved quantities
+  call apply(dens, nx, ny, nz, 0, temp1_de_avg)
+  call apply(temp1_de_avg, nx, ny, nz, 1, temp2_de_avg)
+  call apply(temp2_de_avg, nx, ny, nz, 2, dens_de_avg)
+
+  call apply(tau, nx, ny, nz, 0, temp1_de_avg)
+  call apply(temp1_de_avg, nx, ny, nz, 1, temp2_de_avg)
+  call apply(temp2_de_avg, nx, ny, nz, 2, tau_de_avg)
+
+  call apply(scon(:,:,:,1), nx, ny, nz, 0, temp1_de_avg)
+  call apply(temp1_de_avg, nx, ny, nz, 1, temp2_de_avg)
+  call apply(temp2_de_avg, nx, ny, nz, 2, scon1_de_avg)
+
+  call apply(scon(:,:,:,2), nx, ny, nz, 0, temp1_de_avg)
+  call apply(temp1_de_avg, nx, ny, nz, 1, temp2_de_avg)
+  call apply(temp2_de_avg, nx, ny, nz, 2, scon2_de_avg)
+
+  call apply(scon(:,:,:,3), nx, ny, nz, 0, temp1_de_avg)
+  call apply(temp1_de_avg, nx, ny, nz, 1, temp2_de_avg)
+  call apply(temp2_de_avg, nx, ny, nz, 2, scon3_de_avg)
   
   if (use_min_tracer .ne. 0) then
     local_min_tracer = min_tracer
@@ -168,6 +160,8 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
   do k = 1, nz 
     do j = 1, ny 
       do i = 1, nx
+
+        
 
 #if 0
          if (dens(i,j,k).ne.dens(i,j,k)) then
@@ -217,7 +211,6 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
         ! In excised region, set to atmosphere!    
         if (GRHydro_enable_internal_excision /= 0 .and. (hydro_excision_mask(i,j,k) .gt. 0)) then
            SET_ATMO_MIN(dens(i,j,k), sdetg(i,j,k)*GRHydro_rho_min, r(i,j,k)) !sqrt(det)*GRHydro_rho_min !/(1.d0+GRHydro_atmo_tolerance)
-           SET_ATMO_MIN(dens_avg(i,j,k), sdetg(i,j,k)*GRHydro_rho_min, r(i,j,k)) !sqrt(det)*GRHydro_rho_min !/(1.d0+GRHydro_atmo_tolerance)
            SET_ATMO_MIN(rho(i,j,k), GRHydro_rho_min, r(i,j,k)) !GRHydro_rho_min
            scon(i,j,k,:) = 0.d0
            vup(i,j,k,:) = 0.d0
@@ -228,7 +221,6 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
               temperature(i,j,k) = grhydro_hot_atmo_temp
               y_e(i,j,k) = grhydro_hot_atmo_Y_e
               y_e_con(i,j,k) = y_e(i,j,k) * dens(i,j,k)
-              y_e_con(i,j,k) = y_e(i,j,k) * dens_avg(i,j,k)
               keytemp = 1
               call EOS_Omni_press(GRHydro_eos_handle,keytemp,GRHydro_eos_rf_prec,n,&
                    rho(i,j,k),eps(i,j,k),temperature(i,j,k),y_e(i,j,k),&
@@ -239,12 +231,11 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
                    rho(i,j,k),eps(i,j,k),xtemp,xye,press(i,j,k),keyerr,anyerr)
 
               call EOS_Omni_EpsFromPress(GRHydro_polytrope_handle,keytemp,GRHydro_eos_rf_prec,n,&
-              rho(i,j,k),eps(i,j,k),xtemp,xye,press(i,j,k),eps(i,j,k),keyerr,anyerr)
+                   rho(i,j,k),eps(i,j,k),xtemp,xye,press(i,j,k),eps(i,j,k),keyerr,anyerr)
            endif
 
            ! w_lorentz=1, so the expression for tau reduces to:
            tau(i,j,k)  = sdetg(i,j,k) * (rho(i,j,k)+rho(i,j,k)*eps(i,j,k)) - dens(i,j,k)
-           tau_avg(i,j,k)  = sdetg(i,j,k) * (rho(i,j,k)+rho(i,j,k)*eps(i,j,k)) - dens_avg(i,j,k)
            
            cycle
         endif
@@ -272,12 +263,10 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
         if(evolve_Y_e.ne.0) then
            Y_e(i,j,k) = max(min(Y_e_con(i,j,k) / dens(i,j,k),GRHydro_Y_e_max),&
                 GRHydro_Y_e_min)
-           !Y_e(i,j,k) = max(min(Y_e_con(i,j,k) / dens_avg(i,j,k),GRHydro_Y_e_max),&
-           !     GRHydro_Y_e_min)
         endif
-        !if (1.eq.0) then
+
          !if ( dens(i,j,k) .le. sqrt(det)*GRHydro_rho_min*(1.d0+GRHydro_atmo_tolerance) ) then
-         IF_BELOW_ATMO(dens_avg(i,j,k), sdetg(i,j,k)*GRHydro_rho_min, GRHydro_atmo_tolerance, r(i,j,k)) then
+         IF_BELOW_ATMO(dens(i,j,k), sdetg(i,j,k)*GRHydro_rho_min, GRHydro_atmo_tolerance, r(i,j,k)) then
            SET_ATMO_MIN(dens(i,j,k), sdetg(i,j,k)*GRHydro_rho_min, r(i,j,k)) !sqrt(det)*GRHydro_rho_min !/(1.d0+GRHydro_atmo_tolerance)
            SET_ATMO_MIN(rho(i,j,k), GRHydro_rho_min, r(i,j,k)) !GRHydro_rho_min
            scon(i,j,k,:) = 0.d0
@@ -288,7 +277,7 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
               ! set hot atmosphere values
               temperature(i,j,k) = grhydro_hot_atmo_temp
               y_e(i,j,k) = grhydro_hot_atmo_Y_e
-              y_e_con(i,j,k) = y_e(i,j,k) * dens_avg(i,j,k)
+              y_e_con(i,j,k) = y_e(i,j,k) * dens(i,j,k)
               keytemp = 1
               call EOS_Omni_press(GRHydro_eos_handle,keytemp,GRHydro_eos_rf_prec,n,&
                    rho(i,j,k),eps(i,j,k),temperature(i,j,k),y_e(i,j,k),&
@@ -305,14 +294,12 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
            ! w_lorentz=1, so the expression for tau reduces to:
            tau(i,j,k)  = sdetg(i,j,k) * (rho(i,j,k)+rho(i,j,k)*eps(i,j,k)) - dens(i,j,k)
            
-           
            cycle
 
          end if
-        !end if
 
          if(evolve_temper.eq.0) then
-            !Standard Con2Prim, no de-averaging
+          !Original call, no de-averaging
             !call Con2Prim_pt(int(cctk_iteration,ik),int(i,ik),int(j,ik),int(k,ik),&
             !     GRHydro_eos_handle, dens(i,j,k),scon(i,j,k,1),scon(i,j,k,2), &
             !     scon(i,j,k,3),tau(i,j,k),rho(i,j,k),vup(i,j,k,1),vup(i,j,k,2), &
@@ -320,76 +307,15 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
             !     uxx,uxy,uxz,uyy,uyz,uzz,sdetg(i,j,k),x(i,j,k),y(i,j,k), &
             !     z(i,j,k),r(i,j,k),epsnegative,GRHydro_rho_min,pmin, epsmin, & 
             !     GRHydro_reflevel, GRHydro_C2P_failed(i,j,k))
-          dens_in = dens_avg(i,j,k)
-            tau_in = tau_avg(i,j,k)
-            scon1_in = scon1_avg(i,j,k)
-            scon2_in = scon2_avg(i,j,k)
-            scon3_in = scon3_avg(i,j,k)
-            rho_in = rho(i,j,k)
-            vel_x_in = vup(i,j,k,1)
-            vel_y_in = vup(i,j,k,2)
-            vel_z_in = vup(i,j,k,3)
-            eps_in = eps(i,j,k)
-            press_in = press(i,j,k)
-            w_lorentz_in = w_lorentz(i,j,k)
-
-            write(11,*) "INPUT:", " dens:", dens(i,j,k), "=?=", dens_avg(i,j,k), "tau: ", tau(i,j,k), "=?=", tau_avg(i,j,k),&
-             "scon: ", scon(i,j,k,1), "=?=", scon1_avg(i,j,k), ",", scon(i,j,k,2), "=?=", scon2_avg(i,j,k), ",", scon(i,j,k,3),&
-             "=?=", scon3_avg(i,j,k)
-           
-
-            !Test for if Con2Prim works with small changes in cons values, kinda dumb
-            !dens(i,j,k) = dens(i,j,k) + 0.0001
-            !tau(i,j,k) = tau(i,j,k) + 0.0001
-            !scon(i,j,k,1) = scon(i,j,k,1) + 0.0001
-            !scon(i,j,k,2) = scon(i,j,k,2) + 0.0001
-            !scon(i,j,k,3) = scon(i,j,k,3) + 0.0001
           
-            !Standard Con2Prim, no de-averaging
-            !call Con2Prim_pt(int(cctk_iteration,ik),int(i,ik),int(j,ik),int(k,ik),&
-            !     GRHydro_eos_handle, dens(i,j,k),scon(i,j,k,1),scon(i,j,k,2), &
-            !     scon(i,j,k,3),tau(i,j,k),rho(i,j,k),vup(i,j,k,1),vup(i,j,k,2), &
-            !     vup(i,j,k,3),eps(i,j,k),press(i,j,k),w_lorentz(i,j,k), &
-            !     uxx,uxy,uxz,uyy,uyz,uzz,sdetg(i,j,k),x(i,j,k),y(i,j,k), &
-            !     z(i,j,k),r(i,j,k),epsnegative,GRHydro_rho_min,pmin, epsmin, & 
-            !     GRHydro_reflevel, GRHydro_C2P_failed(i,j,k))
-            
-            !Standard Con2Prim, de-averaged
-            !call Con2Prim_pt(int(cctk_iteration,ik),int(i,ik),int(j,ik),int(k,ik),&
-            !     GRHydro_eos_handle, dens_avg(i,j,k),scon1_avg(i,j,k),scon2_avg(i,j,k), &
-            !     scon3_avg(i,j,k),tau_avg(i,j,k),rho(i,j,k),vup(i,j,k,1),vup(i,j,k,2), &
-            !     vup(i,j,k,3),eps(i,j,k),press(i,j,k),w_lorentz(i,j,k), &
-            !     uxx,uxy,uxz,uyy,uyz,uzz,sdetg(i,j,k),x(i,j,k),y(i,j,k), &
-            !     z(i,j,k),r(i,j,k),epsnegative,GRHydro_rho_min,pmin, epsmin, & 
-            !     GRHydro_reflevel, GRHydro_C2P_failed(i,j,k))
-            
-            if(GRHydro_C2P_failed(i,j,k).ge.1) then
-              write(10,*) "Con2Prim_pt failed at input - dens: "" dens:", dens_in, " tau: ", tau_in, &
-              " scon: ", scon1_in, ",", scon2_in, ",", scon3_in, " rho: ", rho_in, " eps: ", eps_in, &
-              " press: ", press_in, " vel: ", vel_x_in, " , ", vel_y_in, " , ", vel_z_in
-              write(10,*) " OUTPUT: ","dens:", dens_avg(i,j,k), " tau: ", tau_avg(i,j,k), " scon: ", scon1_avg(i,j,k), ",", scon(i,j,k,2), ",", scon(i,j,k,3),&
-                    "metric: ", uxx, " , ", uxy, " , ", uxz, " , ", uyy, " , ", uyz , " , ", uzz, &
-                    " rho: ", rho(i,j,k), " eps: ", eps(i,j,k), &
-                    " press: ", press(i,j,k), " vel: ", vup(i,j,k,1), " , ", vup(i,j,k,2), " , ", &
-                    vup(i,j,k,3), " sdet: ", sdetg(i,j,k), " rho_min: ", GRHydro_rho_min
-            endif
-
-            call GRHydro_RPR_Con2Prim_pt(dens(i,j,k),scon(i,j,k, 1),scon(i,j,k, 2), &
-                 scon(i,j,k, 3),tau(i,j,k), g11(i,j,k), g12(i,j,k), g13(i,j,k), g22(i,j,k), g23(i,j,k), g33(i,j,k), rho(i,j,k), &
-                 eps(i,j,k),press(i,j,k), & 
-                 vup(i,j,k,1),vup(i,j,k,2),vup(i,j,k,3),&
-                 GRHydro_C2P_failed(i,j,k), w_lorentz(i,j,k))
-
-            !call GRHydro_RPR_Con2Prim_pt(dens_avg(i,j,k),scon1_avg(i,j,k),scon2_avg(i,j,k), &
-            !     scon3_avg(i,j,k),tau_avg(i,j,k), g11(i,j,k), g12(i,j,k), g13(i,j,k), g22(i,j,k), g23(i,j,k), g33(i,j,k), rho(i,j,k), &
-            !     eps(i,j,k),press(i,j,k), & 
-            !     vup(i,j,k,1),vup(i,j,k,2),vup(i,j,k,3),&
-            !     GRHydro_C2P_failed(i,j,k), w_lorentz(i,j,k))
-            !     if(GRHydro_C2P_failed(i,j,k).ge.1) then
-            !      write(*,*) "FAILED AT X:", X(i,j,k), " Y:", y(i,j,k), " Z:", z(i,j,k)
-            !      write(10,*) "FAILED AT X:", X(i,j,k), " Y:", y(i,j,k), " Z:", z(i,j,k), " dens:", dens(i,j,k), "tau: ", tau(i,j,k), "scon: ", scon(i,j,k,1), ",", scon(i,j,k,2), ",", scon(i,j,k,3),&
-            !      " g11: ", g11(i,j,k), " g12: ", g12(i,j,k), " g13: ", g13(i,j,k), " g22: ", g22(i,j,k), " g23: ", g23(i,j,k), " g33: ", g33(i,j,k)
-            !    endif
+          !Original Con2Prim with de-averaged values
+            call Con2Prim_pt(int(cctk_iteration,ik),int(i,ik),int(j,ik),int(k,ik),&
+                 GRHydro_eos_handle, dens(i,j,k),scon(i,j,k,1),scon(i,j,k,2), &
+                 scon(i,j,k,3),tau(i,j,k),rho(i,j,k),vup(i,j,k,1),vup(i,j,k,2), &
+                 vup(i,j,k,3),eps(i,j,k),press(i,j,k),w_lorentz(i,j,k), &
+                 uxx,uxy,uxz,uyy,uyz,uzz,sdetg(i,j,k),x(i,j,k),y(i,j,k), &
+                 z(i,j,k),r(i,j,k),epsnegative,GRHydro_rho_min,pmin, epsmin, & 
+                 GRHydro_reflevel, GRHydro_C2P_failed(i,j,k))
          else
             call CCTK_ERROR("Should never reach this point!")
             STOP
@@ -502,19 +428,8 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
   end do
   !$OMP END PARALLEL DO
 
-
-  ! Clean up before exiting
-  !if (allocated(dens_avg)) deallocate(dens_avg)
-  !if (allocated(tau_avg)) deallocate(tau_avg)
-  !if (allocated(scon1_avg)) deallocate(scon1_avg)
-  !if (allocated(scon2_avg)) deallocate(scon2_avg)
-  !if (allocated(scon3_avg)) deallocate(scon3_avg)
-  
-  close(10)
-  close(11)
-
   return
-
+  
 end subroutine Conservative2Primitive
 
 /*@@
@@ -565,6 +480,10 @@ subroutine Con2Prim_pt(cctk_iteration,ii,jj,kk,&
 ! end EOS Omni vars
 
 
+!!$  Undensitize the variables 
+
+  isdetg = 1.0d0/sdetg
+  udens = dens * isdetg
   usx = sx * isdetg
   usy = sy * isdetg
   usz = sz * isdetg
@@ -1999,7 +1918,6 @@ subroutine check_GRHydro_C2P_failed(CCTK_ARGUMENTS)
 
 end subroutine check_GRHydro_C2P_failed
 
-
 /*@@
 @routine    apply
 @date       Fri Jul 5 14:47:00 2024
@@ -2018,6 +1936,8 @@ end subroutine check_GRHydro_C2P_failed
 
 !Apply function as in weno.c++
 subroutine apply(data, nx, ny, nz, dirn, a_center_xyz)
+  use, intrinsic :: ieee_arithmetic
+
   implicit none
 
   ! Input/output parameters
@@ -2026,7 +1946,9 @@ subroutine apply(data, nx, ny, nz, dirn, a_center_xyz)
   real*8, dimension(nx, ny, nz), intent(out) :: a_center_xyz
 
   ! Local variables
-  integer :: i, j, k, p, GRHydro_stencil
+  integer :: i, j, k, p
+  integer :: imin, imax, jmin, jmax, kmin, kmax
+  integer, parameter :: stencil_width = 2
   integer :: i_offset(5), j_offset(5), k_offset(5)
   real*8 :: A(5)
   real*8 :: beta1, beta2, beta3
@@ -2054,42 +1976,58 @@ subroutine apply(data, nx, ny, nz, dirn, a_center_xyz)
   ], [3, 5])
 
   ! Initialize parameters
-  GRHydro_stencil = 3
-  a_center_xyz = 0.0d0
+  a_center_xyz = ieee_value(a_center_xyz(1,1,1), ieee_signaling_nan)
 
   ! Check input validity
-  if (nx < 2*GRHydro_stencil + 1 .or. &
-      ny < 2*GRHydro_stencil + 1 .or. &
-      nz < 2*GRHydro_stencil + 1) then
-    print *, "Error: Grid dimensions too small for stencil"
-    return
+  if (nx < 2*stencil_width + 1 .or. &
+      ny < 2*stencil_width + 1 .or. &
+      nz < 2*stencil_width + 1) then
+    call CCTK_ERROR("Grid dimensions too small for stencil")
   endif
 
   if (dirn < 0 .or. dirn > 2) then
-    print *, "Error: Invalid direction"
-    return
+    call CCTK_ERROR("Invalid direction")
   endif
 
   ! Set up stencil offsets based on direction
+  ! must be called in order 0,1,2 to correctly compute interior data without computing any NaN
   select case (dirn)
     case (0)  ! x-direction
       i_offset = [-2, -1, 0, 1, 2]
       j_offset = [0, 0, 0, 0, 0]
       k_offset = [0, 0, 0, 0, 0]
+      imin = 1 + stencil_width
+      imax = nx - stencil_width
+      jmin = 1
+      jmax = ny
+      kmin = 1
+      kmax = nz
     case (1)  ! y-direction
       i_offset = [0, 0, 0, 0, 0]
       j_offset = [-2, -1, 0, 1, 2]
       k_offset = [0, 0, 0, 0, 0]
+      imin = 1 + stencil_width
+      imax = nx - stencil_width
+      jmin = 1 + stencil_width
+      jmax = ny - stencil_width
+      kmin = 1
+      kmax = nz
     case (2)  ! z-direction
       i_offset = [0, 0, 0, 0, 0]
       j_offset = [0, 0, 0, 0, 0]
       k_offset = [-2, -1, 0, 1, 2]
+      imin = 1 + stencil_width
+      imax = nx - stencil_width
+      jmin = 1 + stencil_width
+      jmax = ny - stencil_width
+      kmin = 1 + stencil_width
+      kmax = nz - stencil_width
   end select
 
   ! Main computation loops
-  do k = GRHydro_stencil, nz - GRHydro_stencil + 1
-    do j = GRHydro_stencil, ny - GRHydro_stencil + 1
-      do i = GRHydro_stencil, nx - GRHydro_stencil + 1
+  do k = kmin, kmax
+    do j = jmin, jmax
+      do i = imin, imax
         ! Gather stencil values
         do p = 1, 5
           A(p) = data(i + i_offset(p), j + j_offset(p), k + k_offset(p))
