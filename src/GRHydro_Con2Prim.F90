@@ -67,6 +67,7 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
   CCTK_REAL, DIMENSION(:,:,:), allocatable :: dens_de_avg, tau_de_avg
   CCTK_REAL, DIMENSION(:,:,:), allocatable :: scon1_de_avg, scon2_de_avg, scon3_de_avg
   CCTK_REAL, DIMENSION(:,:,:), allocatable :: temp1_de_avg, temp2_de_avg
+  CCTK_REAL :: wham_deavg_diff
 
 
 ! begin EOS Omni vars
@@ -299,6 +300,9 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
          end if
 
          if(evolve_temper.eq.0) then
+          !Calculate the difference between the de-averaged and averaged quantities
+          wham_deavg_diff = abs((dens_de_avg(i,j,k) - dens(i,j,k))/dens(i,j,k)) * 100.d0
+          !TODO: Make a linear function, calculating the values between averaged and de-averaged values
           !Original call, no de-averaging
             !call Con2Prim_pt(int(cctk_iteration,ik),int(i,ik),int(j,ik),int(k,ik),&
             !     GRHydro_eos_handle, dens(i,j,k),scon(i,j,k,1),scon(i,j,k,2), &
@@ -316,6 +320,18 @@ subroutine Conservative2Primitive(CCTK_ARGUMENTS)
                  uxx,uxy,uxz,uyy,uyz,uzz,sdetg(i,j,k),x(i,j,k),y(i,j,k), &
                  z(i,j,k),r(i,j,k),epsnegative,GRHydro_rho_min,pmin, epsmin, & 
                  GRHydro_reflevel, GRHydro_C2P_failed(i,j,k))
+            if(GRHydro_C2P_failed(i,j,k).ne.0) then
+              !Run Con2Prim again, this time with averaged values
+              !GRHydro_C2P_failed(i,j,k) = 0
+              call Con2Prim_pt(int(cctk_iteration,ik),int(i,ik),int(j,ik),int(k,ik),&
+                 GRHydro_eos_handle, dens(i,j,k),scon(i,j,k,1),scon(i,j,k,2), &
+                 scon(i,j,k,3),tau(i,j,k),rho(i,j,k),vup(i,j,k,1),vup(i,j,k,2), &
+                 vup(i,j,k,3),eps(i,j,k),press(i,j,k),w_lorentz(i,j,k), &
+                 uxx,uxy,uxz,uyy,uyz,uzz,sdetg(i,j,k),x(i,j,k),y(i,j,k), &
+                 z(i,j,k),r(i,j,k),epsnegative,GRHydro_rho_min,pmin, epsmin, & 
+                 GRHydro_reflevel, GRHydro_C2P_failed(i,j,k))
+
+            endif
          else
             call CCTK_ERROR("Should never reach this point!")
             STOP
@@ -471,6 +487,7 @@ subroutine Con2Prim_pt(cctk_iteration,ii,jj,kk,&
   CCTK_INT cctk_iteration,ii,jj,kk
   character(len=200) warnline
   logical epsnegative, mustbisect
+  CCTK_REAL c2p_switch_flag
 
 ! begin EOS Omni vars
   CCTK_INT  :: n,keytemp,anyerr,keyerr
@@ -478,6 +495,14 @@ subroutine Con2Prim_pt(cctk_iteration,ii,jj,kk,&
   n=1;keytemp=0;anyerr=0;keyerr=0
   xpress=0.0d0;xtemp=0.0d0;xye=0.0d0
 ! end EOS Omni vars
+
+!switch flag if Con2Prim failed, so that we switch Con2Prim to run fixes with averaged quantities
+  if(GRHydro_C2P_failed.ne.0) then
+    GRHydro_C2P_failed = 0
+    c2p_switch_flag = 1
+  else
+    c2p_switch_flag = 0
+  endif
 
 
 !!$  Undensitize the variables 
@@ -744,6 +769,12 @@ subroutine Con2Prim_pt(cctk_iteration,ii,jj,kk,&
 
   !if (rho .le. GRHydro_rho_min*(1.d0+GRHydro_atmo_tolerance) ) then
   IF_BELOW_ATMO(rho, GRHydro_rho_min, GRHydro_atmo_tolerance, r) then
+    !Fail the test, and exit Con2Prim, so that we can run this again using cell averaged quantities
+    !TODO: Could be done in a way that this only triggers when we are working with de-averaged quantities. Could set a flag in the function that can trigger this or not
+    if(c2p_switch_flag .eq. 0) then
+      GRHydro_C2P_failed = 1
+      return
+    endif
     SET_ATMO_MIN(rho, GRHydro_rho_min, r) !GRHydro_rho_min
     udens = rho
     dens = sdetg * rho
@@ -773,6 +804,12 @@ subroutine Con2Prim_pt(cctk_iteration,ii,jj,kk,&
 !!$If all else fails, use the polytropic EoS
 
   if(epsilon .lt. 0.0d0) then
+    !Fail the test, and exit Con2Prim, so that we can run this again using cell averaged quantities
+    !TODO: Could be done in a way that this only triggers when we are working with de-averaged quantities. Could set a flag in the function that can trigger this or not
+    if(c2p_switch_flag .eq. 0) then
+      GRHydro_C2P_failed = 1
+      return
+    endif
     epsnegative = .true.
   endif
 
